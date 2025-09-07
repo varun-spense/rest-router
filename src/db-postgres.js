@@ -355,7 +355,7 @@ function upsert(table, data, uniqueKeys = []) {
             results[0].rows &&
             results[0].rows.length > 0
           ) {
-            response["id"] = results[0].rows[0].id;
+            response["id"] = extractId(results[0].rows[0]);
           }
           resolve(response);
         } catch (err) {
@@ -398,21 +398,33 @@ function executeUpsert(
     const conflictColumns = uniqueKeys
       .map((col) => format("%I", col))
       .join(", ");
-    const updateClause =
-      updateColumns.length > 0
-        ? updateColumns
-            .map((col) => format("%I = EXCLUDED.%I", col, col))
-            .join(", ")
-        : format("%I = EXCLUDED.%I", insertColumns[0], insertColumns[0]); // fallback if no update columns
 
-    const statement = format(
-      "INSERT INTO %I (%s) VALUES %s ON CONFLICT (%s) DO UPDATE SET %s RETURNING *",
-      table,
-      columnNames,
-      valuePlaceholders,
-      conflictColumns,
-      updateClause
-    );
+    let statement;
+    if (uniqueKeys.length > 0) {
+      const updateClause =
+        updateColumns.length > 0
+          ? updateColumns
+              .map((col) => format("%I = EXCLUDED.%I", col, col))
+              .join(", ")
+          : format("%I = EXCLUDED.%I", insertColumns[0], insertColumns[0]); // fallback if no update columns
+
+      statement = format(
+        "INSERT INTO %I (%s) VALUES %s ON CONFLICT (%s) DO UPDATE SET %s RETURNING *",
+        table,
+        columnNames,
+        valuePlaceholders,
+        conflictColumns,
+        updateClause
+      );
+    } else {
+      // No unique keys, just do a simple insert
+      statement = format(
+        "INSERT INTO %I (%s) VALUES %s RETURNING *",
+        table,
+        columnNames,
+        valuePlaceholders
+      );
+    }
 
     const flatValues = valueRows.flat();
 
@@ -484,7 +496,7 @@ function insert(table, data, uniqueKeys = []) {
             results[0].rows &&
             results[0].rows.length > 0
           ) {
-            response["id"] = results[0].rows[0].id;
+            response["id"] = extractId(results[0].rows[0]);
           }
           resolve(response);
         } catch (err) {
@@ -544,6 +556,20 @@ function namify(text) {
   return text
     .replace("_", " ")
     .replace(/(^\w{1})|(\s+\w{1})/g, (letter) => letter.toUpperCase());
+}
+
+// Helper function to extract ID from a row
+function extractId(row) {
+  if (!row) return null;
+
+  const keys = Object.keys(row);
+  // Look for common ID patterns: id, _id, table_id, etc.
+  const idKey =
+    keys.find(
+      (key) => key === "id" || key.endsWith("_id") || key.includes("id")
+    ) || keys[0]; // fallback to first column
+
+  return row[idKey];
 }
 
 module.exports = {

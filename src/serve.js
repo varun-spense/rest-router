@@ -23,13 +23,14 @@ if (process.env.NODE_ENV === "TEST") {
 
 const { db, model, route } = require("./index");
 db.connect({
-  connectionLimit: 100,
-  host: process.env.DB_HOST,
   user: process.env.DB_USER,
-  password: process.env.DB_PASS,
+  host: process.env.DB_HOST,
   database: process.env.DB_NAME,
-  port: process.env.DB_PORT,
-  charset: "utf8mb4",
+  password: process.env.DB_PASS,
+  port: process.env.DB_PORT || 5432,
+  max: 100, // maximum number of clients in the pool
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 const test = model(
   db,

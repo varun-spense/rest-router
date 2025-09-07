@@ -1,7 +1,7 @@
 process.env.NODE_ENV = "TEST";
 process.env.TEST_PORT = 30001;
 let crypto = require("crypto");
-let table = "test-" + crypto.randomUUID();
+let table = "test_" + crypto.randomUUID().replace(/-/g, "_");
 const assert = require("assert");
 const faker = require("faker");
 const { db, model } = require("../src/index.js");
@@ -22,27 +22,48 @@ let test = model(
 describe("Model Function", function () {
   before(function (done) {
     db.query(
-      "CREATE TABLE IF NOT EXISTS`" +
+      "CREATE TABLE IF NOT EXISTS " +
         table +
-        "` (" +
-        "`test_id` int(11) NOT NULL AUTO_INCREMENT," +
-        "`name` varchar(63) NOT NULL DEFAULT ''," +
-        "`description` varchar(255) NOT NULL DEFAULT ''," +
-        "`type` int(11) NOT NULL NOT NULL DEFAULT 0," +
-        "`info` json NOT NULL," +
-        "`created_at` datetime NOT NULL DEFAULT current_timestamp()," +
-        "`modified_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()," +
-        "PRIMARY KEY (`test_id`)" +
-        ") ENGINE=InnoDB AUTO_INCREMENT=0 DEFAULT CHARSET=utf8mb4"
-    ).then((data) => {
-      done();
-    });
+        " (" +
+        "test_id SERIAL PRIMARY KEY," +
+        "name VARCHAR(63) NOT NULL DEFAULT ''," +
+        "description VARCHAR(255) NOT NULL DEFAULT ''," +
+        "type INTEGER NOT NULL DEFAULT 0," +
+        "info JSONB NOT NULL," +
+        "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP," +
+        "modified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP" +
+        ")"
+    )
+      .then((data) => {
+        // Create trigger for updated_at timestamp
+        return db.query(`
+        CREATE OR REPLACE FUNCTION update_modified_at_column()
+        RETURNS TRIGGER AS $$
+        BEGIN
+          NEW.modified_at = CURRENT_TIMESTAMP;
+          RETURN NEW;
+        END;
+        $$ language 'plpgsql';
+        
+        DROP TRIGGER IF EXISTS update_${table}_modified_at ON ${table};
+        CREATE TRIGGER update_${table}_modified_at
+          BEFORE UPDATE ON ${table}
+          FOR EACH ROW
+          EXECUTE FUNCTION update_modified_at_column();
+      `);
+      })
+      .then(() => {
+        done();
+      });
   });
   after(function (done) {
-    db.query("DROP TABLE `" + table + "`;").then(() => {
-      done();
-    });
-    done();
+    db.query("DROP TABLE IF EXISTS " + table + " CASCADE;")
+      .then(() => {
+        done();
+      })
+      .catch(() => {
+        done();
+      });
   });
   let test_id = 0;
   let payload = {
