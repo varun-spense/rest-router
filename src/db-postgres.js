@@ -18,14 +18,14 @@ function connect(credentials) {
 
     // Set search_path for new connections
     pool.on("connect", (client) => {
-      client
-        .query(`SET search_path TO "${schemaName}", public`)
-        .catch((err) => {
-          console.warn(
-            "Warning: Could not set schema search_path:",
-            err.message
-          );
-        });
+      // Use pg-format to safely format the schema name
+      const searchPathQuery = format(
+        "SET search_path TO %I, public",
+        schemaName
+      );
+      client.query(searchPathQuery).catch((err) => {
+        console.warn("Warning: Could not set schema search_path:", err.message);
+      });
     });
   }
 
