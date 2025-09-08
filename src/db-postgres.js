@@ -67,7 +67,7 @@ function query(sql, parameters = []) {
       if (error) {
         reject(error);
       }
-      resolve(results);
+      resolve(results.rows);
     });
   });
 }
