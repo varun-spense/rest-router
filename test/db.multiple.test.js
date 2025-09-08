@@ -8,9 +8,11 @@ const { db } = require("../src/index.js");
 const app = require("./../src/serve.js");
 describe("Database Functions", function () {
   before(function (done) {
+    const schemaQualifiedTable = db.formatTableName(table);
+
     db.query(
       "CREATE TABLE IF NOT EXISTS " +
-        table +
+        schemaQualifiedTable +
         " (" +
         "test_id SERIAL PRIMARY KEY," +
         "test_name VARCHAR(63) NOT NULL DEFAULT ''," +
@@ -29,9 +31,9 @@ describe("Database Functions", function () {
         END;
         $$ language 'plpgsql';
         
-        DROP TRIGGER IF EXISTS update_${table}_modified_at ON ${table};
+        DROP TRIGGER IF EXISTS update_${table}_modified_at ON ${schemaQualifiedTable};
         CREATE TRIGGER update_${table}_modified_at
-          BEFORE UPDATE ON ${table}
+          BEFORE UPDATE ON ${schemaQualifiedTable}
           FOR EACH ROW
           EXECUTE FUNCTION update_modified_at_column();
       `);
@@ -45,7 +47,8 @@ describe("Database Functions", function () {
       });
   });
   after(function (done) {
-    db.query("DROP TABLE IF EXISTS " + table + " CASCADE;")
+    const schemaQualifiedTable = db.formatTableName(table);
+    db.query("DROP TABLE IF EXISTS " + schemaQualifiedTable + " CASCADE;")
       .then(() => {
         done();
       })

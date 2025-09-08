@@ -1,5 +1,5 @@
 const express = require("express");
-db = require("./db.js");
+db = require("./db-postgres.js");
 function route(table, override = {}, unique_keys = []) {
   return express
     .Router()

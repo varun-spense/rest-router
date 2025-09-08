@@ -9,48 +9,48 @@ const WHERE_INVALID = "Invalid filter object";
 function connect(credentials) {
   pool = new Pool(credentials);
 
-  // Store the schema name (same as database name, but use 'public' for tests)
-  if (process.env.NODE_ENV === "test" || process.env.NODE_ENV === "TEST") {
-    currentSchema = null; // Use default schema (public) for tests
-  } else {
-    currentSchema = credentials.database; // Use database name as schema for production
-  }
+  // Add connection pool error handling
+  pool.on("error", (err, client) => {
+    console.error("Unexpected error on idle client", err);
+  });
+
+  // Always use database name as schema - consistent across all environments
+  currentSchema = credentials.database;
 
   return pool;
 }
 
 // Helper function to format table name with schema (DB_NAME.table_name)
 function formatTableName(tableName) {
-  if (currentSchema && !tableName.includes(".")) {
-    return `${currentSchema}.${tableName}`;
+  // Handle null/undefined table names
+  if (tableName === null || tableName === undefined) {
+    throw new Error("Table name cannot be null or undefined");
   }
-  return tableName;
+
+  const result =
+    currentSchema && !tableName.includes(".")
+      ? `${currentSchema}.${tableName}`
+      : tableName;
+
+  return result;
 }
 
 // Helper function to get a properly formatted table identifier for pg-format
 function getTableIdentifier(tableName) {
-  if (currentSchema && !tableName.includes(".")) {
-    // Format as "schema"."table" using pg-format for safety
-    return format("%I.%I", currentSchema, tableName);
+  // Handle null/undefined table names
+  if (tableName === null || tableName === undefined) {
+    throw new Error("Table name cannot be null or undefined");
   }
-  return format("%I", tableName);
-}
 
-// Helper function to format table name with schema (DB_NAME.table_name)
-function formatTableName(tableName) {
+  let result;
   if (currentSchema && !tableName.includes(".")) {
-    return `${currentSchema}.${tableName}`;
+    // Format as "schema"."table" using pg-format for safety - ensure separate quotes
+    result = `${format("%I", currentSchema)}.${format("%I", tableName)}`;
+  } else {
+    result = format("%I", tableName);
   }
-  return tableName;
-}
 
-// Helper function to get a properly formatted table identifier for pg-format
-function getTableIdentifier(tableName) {
-  if (currentSchema && !tableName.includes(".")) {
-    // Format as "schema"."table" using pg-format for safety
-    return format("%I.%I", currentSchema, tableName);
-  }
-  return format("%I", tableName);
+  return result;
 }
 
 // Debug function to log the current configuration
@@ -73,7 +73,8 @@ function query(sql, parameters = []) {
 }
 
 function sort_builder(sort) {
-  if (sort.length < 1) {
+  // Handle null/undefined sort arrays
+  if (!sort || sort.length < 1) {
     return {
       query: "",
       values: [],
@@ -115,7 +116,6 @@ function where(filter, safeDelete = null) {
   } catch (err) {
     return null;
   }
-
   if (safeDelete !== null) {
     for (const filterItem of filter) {
       filterItem.push([safeDelete, "=", 0]);
@@ -165,21 +165,16 @@ function where(filter, safeDelete = null) {
   }
 
   let query = "WHERE ((" + conditionOr.join(") OR (") + "))";
-  return {
+  const result = {
     query,
     values,
   };
+  return result;
 }
 
 function get(table, filter = [], sort = [], safeDelete = null) {
   const response = {};
-  return new Promise((resolve, reject) => {
-    if (safeDelete !== null) {
-      for (const filterItem of filter) {
-        filterItem.push([safeDelete, "=", 0]);
-      }
-    }
-
+  return new Promise(async (resolve, reject) => {
     const whereData = where(filter, safeDelete);
     const sortData = sort_builder(sort);
 
@@ -188,28 +183,35 @@ function get(table, filter = [], sort = [], safeDelete = null) {
       return;
     }
 
-    const statement = format(
-      "SELECT * FROM %s %s %s",
-      getTableIdentifier(table),
-      whereData.query,
-      sortData.query
-    );
+    const tableIdentifier = getTableIdentifier(table);
+    const statement =
+      `SELECT * FROM ${tableIdentifier} ${whereData.query} ${sortData.query}`.trim();
     const allValues = [...whereData.values, ...sortData.values];
 
-    pool.query(statement, allValues, function (error, results) {
-      if (error) {
-        reject({ message: error.message });
-        return;
-      }
-      response["data"] = jsonSafeParse(results.rows);
+    // Use connection-level error handling like in qcount()
+    try {
+      const client = await pool.connect();
+      try {
+        const results = await client.query(statement, allValues);
+        response["data"] = jsonSafeParse(results.rows);
+        client.release();
 
-      qcount(table, filter, safeDelete)
-        .then((count) => {
+        // Now get the count
+        try {
+          const count = await qcount(table, filter, safeDelete);
           response["count"] = count;
           resolve(response);
-        })
-        .catch(reject);
-    });
+        } catch (qcountError) {
+          reject(qcountError);
+        }
+      } catch (queryError) {
+        client.release();
+        reject({ message: queryError.message });
+      }
+    } catch (connectionError) {
+      console.log(`[ERROR] get() connection failed:`, connectionError.message);
+      reject({ message: connectionError.message });
+    }
   });
 }
 
@@ -231,17 +233,14 @@ function list(
       return;
     }
 
-    const statement = format(
-      "SELECT * FROM %s %s %s LIMIT $%s OFFSET $%s",
-      getTableIdentifier(table),
-      whereData.query,
-      sortData.query,
-      whereData.values.length + 1,
+    const tableIdentifier = getTableIdentifier(table);
+    const statement = `SELECT * FROM ${tableIdentifier} ${whereData.query} ${
+      sortData.query
+    } LIMIT $${whereData.values.length + 1} OFFSET $${
       whereData.values.length + 2
-    );
+    }`.trim();
 
     const allValues = [...whereData.values, limit, page * limit];
-
     pool.query(statement, allValues, function (error, results) {
       if (error) {
         reject({ message: error.message });
@@ -260,26 +259,25 @@ function list(
 }
 
 function qcount(table, filter, safeDelete = null) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     const whereData = where(filter, safeDelete);
     if (whereData == null) {
       reject({ message: WHERE_INVALID });
       return;
     }
-
-    const statement = format(
-      "SELECT count(*) AS number FROM %s %s",
-      getTableIdentifier(table),
-      whereData.query
-    );
-
-    pool.query(statement, whereData.values, function (error, results) {
-      if (error || results === "undefined") {
-        resolve(0);
-      } else {
-        resolve(parseInt(results.rows[0].number));
-      }
-    });
+    const tableIdentifier = getTableIdentifier(table);
+    const statement =
+      `SELECT count(*) AS number FROM ${tableIdentifier} ${whereData.query}`.trim();
+    const client = await pool.connect();
+    try {
+      const results = await client.query(statement, whereData.values);
+      client.release();
+      resolve(parseInt(results.rows[0].number));
+      return;
+    } catch (queryError) {
+      client.release(); // Always release the client
+      throw queryError; // Re-throw to trigger alternatives
+    }
   });
 }
 
@@ -300,23 +298,17 @@ function remove(table, filter, safeDelete = null) {
     let values = [];
 
     if (safeDelete != null) {
-      statement = format(
-        "UPDATE %s SET %I = $%s %s",
-        getTableIdentifier(table),
-        safeDelete,
-        whereData.values.length + 1,
-        whereData.query
-      );
+      const tableIdentifier = getTableIdentifier(table);
+      statement = `UPDATE ${tableIdentifier} SET ${format(
+        "%I",
+        safeDelete
+      )} = $${whereData.values.length + 1} ${whereData.query}`.trim();
       values = [...whereData.values, 1];
     } else {
-      statement = format(
-        "DELETE FROM %s %s",
-        getTableIdentifier(table),
-        whereData.query
-      );
+      const tableIdentifier = getTableIdentifier(table);
+      statement = `DELETE FROM ${tableIdentifier} ${whereData.query}`.trim();
       values = whereData.values;
     }
-
     pool.query(statement, values, function (error, results) {
       if (error || results === undefined) {
         reject({ message: error.message });
@@ -463,26 +455,15 @@ function executeUpsert(
               .join(", ")
           : format("%I = EXCLUDED.%I", insertColumns[0], insertColumns[0]); // fallback if no update columns
 
-      statement = format(
-        "INSERT INTO %s (%s) VALUES %s ON CONFLICT (%s) DO UPDATE SET %s RETURNING *",
-        getTableIdentifier(table),
-        columnNames,
-        valuePlaceholders,
-        conflictColumns,
-        updateClause
-      );
+      const tableIdentifier = getTableIdentifier(table);
+      statement = `INSERT INTO ${tableIdentifier} (${columnNames}) VALUES ${valuePlaceholders} ON CONFLICT (${conflictColumns}) DO UPDATE SET ${updateClause} RETURNING *`;
     } else {
       // No unique keys, just do a simple insert
-      statement = format(
-        "INSERT INTO %s (%s) VALUES %s RETURNING *",
-        getTableIdentifier(table),
-        columnNames,
-        valuePlaceholders
-      );
+      const tableIdentifier = getTableIdentifier(table);
+      statement = `INSERT INTO ${tableIdentifier} (${columnNames}) VALUES ${valuePlaceholders} RETURNING *`;
     }
 
     const flatValues = valueRows.flat();
-
     pool.query(statement, flatValues, function (error, results) {
       if (error) {
         reject(error);
@@ -584,15 +565,10 @@ function executeInsert(table, insertColumns, valueRows) {
       })
       .join(", ");
 
-    const statement = format(
-      "INSERT INTO %I (%s) VALUES %s RETURNING *",
-      table,
-      columnNames,
-      valuePlaceholders
-    );
+    const tableIdentifier = getTableIdentifier(table);
+    const statement = `INSERT INTO ${tableIdentifier} (${columnNames}) VALUES ${valuePlaceholders} RETURNING *`;
 
     const flatValues = valueRows.flat();
-
     pool.query(statement, flatValues, function (error, results) {
       if (error) {
         reject(error);

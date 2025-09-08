@@ -1,6 +1,9 @@
 // Example configuration for PostgreSQL with automatic schema handling
 
+require("dotenv").config();
 const { db } = require("./src/index");
+
+console.log("Schema config before connect:", db.getSchemaConfig());
 
 // Connect to database
 db.connect({
@@ -14,11 +17,23 @@ db.connect({
   connectionTimeoutMillis: 2000,
 });
 
-// That's it! The system now automatically:
-// - Uses DB_NAME as schema in production (e.g., "spense_invest.table_name")
-// - Uses public schema for tests when NODE_ENV is 'test' or 'TEST'
-// - Properly formats all table references with pg-format for safety
+console.log("Schema config after connect:", db.getSchemaConfig());
 
-console.log("Schema config:", db.getSchemaConfig());
+// Test table name formatting
+console.log("Table name formatting test:");
+console.log("formatTableName('users'):", db.formatTableName("users"));
+console.log("getTableIdentifier('users'):", db.getTableIdentifier("users"));
+
+// Test pg-format directly
+const format = require("pg-format");
+console.log(
+  "Direct pg-format test:",
+  format("%I.%I", "spense_invest", "users")
+);
+
+// That's it! The system now automatically:
+// - Uses DB_NAME as schema in production/development (e.g., "spense_invest.table_name")
+// - Uses public schema only for unit tests when NODE_ENV="TEST"
+// - Properly formats all table references with pg-format for safety
 
 module.exports = db;
