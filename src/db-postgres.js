@@ -10,7 +10,7 @@ function connect(credentials) {
   pool = new Pool(credentials);
 
   // Store the schema name (same as database name, but use 'public' for tests)
-  if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'TEST') {
+  if (process.env.NODE_ENV === "test" || process.env.NODE_ENV === "TEST") {
     currentSchema = null; // Use default schema (public) for tests
   } else {
     currentSchema = credentials.database; // Use database name as schema for production
@@ -31,9 +31,9 @@ function formatTableName(tableName) {
 function getTableIdentifier(tableName) {
   if (currentSchema && !tableName.includes(".")) {
     // Format as "schema"."table" using pg-format for safety
-    return format('%I.%I', currentSchema, tableName);
+    return format("%I.%I", currentSchema, tableName);
   }
-  return format('%I', tableName);
+  return format("%I", tableName);
 }
 
 // Helper function to format table name with schema (DB_NAME.table_name)
@@ -48,9 +48,9 @@ function formatTableName(tableName) {
 function getTableIdentifier(tableName) {
   if (currentSchema && !tableName.includes(".")) {
     // Format as "schema"."table" using pg-format for safety
-    return format('%I.%I', currentSchema, tableName);
+    return format("%I.%I", currentSchema, tableName);
   }
-  return format('%I', tableName);
+  return format("%I", tableName);
 }
 
 // Debug function to log the current configuration

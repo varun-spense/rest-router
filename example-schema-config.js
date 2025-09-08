@@ -19,6 +19,6 @@ db.connect({
 // - Uses public schema for tests when NODE_ENV is 'test' or 'TEST'
 // - Properly formats all table references with pg-format for safety
 
-console.log('Schema config:', db.getSchemaConfig());
+console.log("Schema config:", db.getSchemaConfig());
 
 module.exports = db;
