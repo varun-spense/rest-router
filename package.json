@@ -1,6 +1,6 @@
 {
   "name": "pg-model-router",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Generative API Creation using pg and express libraries in node js",
   "main": "src/index.js",
   "scripts": {
