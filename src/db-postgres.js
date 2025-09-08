@@ -9,35 +9,56 @@ const WHERE_INVALID = "Invalid filter object";
 function connect(credentials) {
   pool = new Pool(credentials);
 
-  // Store the schema name (same as database name)
-  currentSchema = credentials.database;
-
-  // Set the search_path to use the same schema name as database name for all connections
-  if (credentials.database) {
-    const schemaName = credentials.database;
-
-    // Set search_path for new connections
-    pool.on("connect", (client) => {
-      // Use pg-format to safely format the schema name
-      const searchPathQuery = format(
-        "SET search_path TO %I, public",
-        schemaName
-      );
-      client.query(searchPathQuery).catch((err) => {
-        console.warn("Warning: Could not set schema search_path:", err.message);
-      });
-    });
+  // Store the schema name (same as database name, but use 'public' for tests)
+  if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'TEST') {
+    currentSchema = null; // Use default schema (public) for tests
+  } else {
+    currentSchema = credentials.database; // Use database name as schema for production
   }
 
   return pool;
 }
 
-// Helper function to format table name with schema if needed
+// Helper function to format table name with schema (DB_NAME.table_name)
 function formatTableName(tableName) {
   if (currentSchema && !tableName.includes(".")) {
-    return `"${currentSchema}"."${tableName}"`;
+    return `${currentSchema}.${tableName}`;
   }
   return tableName;
+}
+
+// Helper function to get a properly formatted table identifier for pg-format
+function getTableIdentifier(tableName) {
+  if (currentSchema && !tableName.includes(".")) {
+    // Format as "schema"."table" using pg-format for safety
+    return format('%I.%I', currentSchema, tableName);
+  }
+  return format('%I', tableName);
+}
+
+// Helper function to format table name with schema (DB_NAME.table_name)
+function formatTableName(tableName) {
+  if (currentSchema && !tableName.includes(".")) {
+    return `${currentSchema}.${tableName}`;
+  }
+  return tableName;
+}
+
+// Helper function to get a properly formatted table identifier for pg-format
+function getTableIdentifier(tableName) {
+  if (currentSchema && !tableName.includes(".")) {
+    // Format as "schema"."table" using pg-format for safety
+    return format('%I.%I', currentSchema, tableName);
+  }
+  return format('%I', tableName);
+}
+
+// Debug function to log the current configuration
+function getSchemaConfig() {
+  return {
+    currentSchema,
+    hasPool: !!pool,
+  };
 }
 
 function query(sql, parameters = []) {
@@ -168,8 +189,8 @@ function get(table, filter = [], sort = [], safeDelete = null) {
     }
 
     const statement = format(
-      "SELECT * FROM %I %s %s",
-      table,
+      "SELECT * FROM %s %s %s",
+      getTableIdentifier(table),
       whereData.query,
       sortData.query
     );
@@ -211,8 +232,8 @@ function list(
     }
 
     const statement = format(
-      "SELECT * FROM %I %s %s LIMIT $%s OFFSET $%s",
-      table,
+      "SELECT * FROM %s %s %s LIMIT $%s OFFSET $%s",
+      getTableIdentifier(table),
       whereData.query,
       sortData.query,
       whereData.values.length + 1,
@@ -247,8 +268,8 @@ function qcount(table, filter, safeDelete = null) {
     }
 
     const statement = format(
-      "SELECT count(*) AS number FROM %I %s",
-      table,
+      "SELECT count(*) AS number FROM %s %s",
+      getTableIdentifier(table),
       whereData.query
     );
 
@@ -280,15 +301,19 @@ function remove(table, filter, safeDelete = null) {
 
     if (safeDelete != null) {
       statement = format(
-        "UPDATE %I SET %I = $%s %s",
-        table,
+        "UPDATE %s SET %I = $%s %s",
+        getTableIdentifier(table),
         safeDelete,
         whereData.values.length + 1,
         whereData.query
       );
       values = [...whereData.values, 1];
     } else {
-      statement = format("DELETE FROM %I %s", table, whereData.query);
+      statement = format(
+        "DELETE FROM %s %s",
+        getTableIdentifier(table),
+        whereData.query
+      );
       values = whereData.values;
     }
 
@@ -439,8 +464,8 @@ function executeUpsert(
           : format("%I = EXCLUDED.%I", insertColumns[0], insertColumns[0]); // fallback if no update columns
 
       statement = format(
-        "INSERT INTO %I (%s) VALUES %s ON CONFLICT (%s) DO UPDATE SET %s RETURNING *",
-        table,
+        "INSERT INTO %s (%s) VALUES %s ON CONFLICT (%s) DO UPDATE SET %s RETURNING *",
+        getTableIdentifier(table),
         columnNames,
         valuePlaceholders,
         conflictColumns,
@@ -449,8 +474,8 @@ function executeUpsert(
     } else {
       // No unique keys, just do a simple insert
       statement = format(
-        "INSERT INTO %I (%s) VALUES %s RETURNING *",
-        table,
+        "INSERT INTO %s (%s) VALUES %s RETURNING *",
+        getTableIdentifier(table),
         columnNames,
         valuePlaceholders
       );
@@ -615,4 +640,6 @@ module.exports = {
   pool,
   insert,
   formatTableName,
+  getTableIdentifier,
+  getSchemaConfig,
 };
