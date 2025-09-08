@@ -3,11 +3,41 @@ const format = require("pg-format");
 const { jsonSafeParse } = require("./function");
 
 let pool = null;
+let currentSchema = null;
 const WHERE_INVALID = "Invalid filter object";
 
 function connect(credentials) {
   pool = new Pool(credentials);
+
+  // Store the schema name (same as database name)
+  currentSchema = credentials.database;
+
+  // Set the search_path to use the same schema name as database name for all connections
+  if (credentials.database) {
+    const schemaName = credentials.database;
+
+    // Set search_path for new connections
+    pool.on("connect", (client) => {
+      client
+        .query(`SET search_path TO "${schemaName}", public`)
+        .catch((err) => {
+          console.warn(
+            "Warning: Could not set schema search_path:",
+            err.message
+          );
+        });
+    });
+  }
+
   return pool;
+}
+
+// Helper function to format table name with schema if needed
+function formatTableName(tableName) {
+  if (currentSchema && !tableName.includes(".")) {
+    return `"${currentSchema}"."${tableName}"`;
+  }
+  return tableName;
 }
 
 function query(sql, parameters = []) {
@@ -584,4 +614,5 @@ module.exports = {
   change: upsert,
   pool,
   insert,
+  formatTableName,
 };

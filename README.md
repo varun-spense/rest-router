@@ -1,6 +1,6 @@
-# mysql-model-router
+# pg-model-router
 
-Generative API Creation using mysql2 and express libraries in node js
+Generative API Creation using pg and express libraries in node js
 
 ```
 const { db, model,route } = require("mysql-model-router");
