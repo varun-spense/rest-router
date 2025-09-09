@@ -423,26 +423,8 @@ function executeUpsert(
   valueRows
 ) {
   return new Promise((resolve, reject) => {
-    // Build the INSERT ... ON CONFLICT statement
+    const tableIdentifier = getTableIdentifier(table);
     const columnNames = insertColumns
-      .map((col) => format("%I", col))
-      .join(", ");
-    const valuePlaceholders = valueRows
-      .map((row, rowIndex) => {
-        return (
-          "(" +
-          row
-            .map(
-              (_, colIndex) =>
-                `$${rowIndex * insertColumns.length + colIndex + 1}`
-            )
-            .join(", ") +
-          ")"
-        );
-      })
-      .join(", ");
-
-    const conflictColumns = uniqueKeys
       .map((col) => format("%I", col))
       .join(", ");
 
@@ -450,16 +432,108 @@ function executeUpsert(
     if (uniqueKeys.length > 0) {
       const updateClause =
         updateColumns.length > 0
-          ? updateColumns
-              .map((col) => format("%I = EXCLUDED.%I", col, col))
-              .join(", ")
-          : format("%I = EXCLUDED.%I", insertColumns[0], insertColumns[0]); // fallback if no update columns
+          ? updateColumns.map((col) => format("%I = s.%I", col, col)).join(", ")
+          : format("%I = s.%I", insertColumns[0], insertColumns[0]); // fallback if no update columns
 
-      const tableIdentifier = getTableIdentifier(table);
-      statement = `INSERT INTO ${tableIdentifier} (${columnNames}) VALUES ${valuePlaceholders} ON CONFLICT (${conflictColumns}) DO UPDATE SET ${updateClause} RETURNING *`;
+      if (uniqueKeys.length === 1) {
+        // Single unique key - standard approach
+        const valuePlaceholders = valueRows
+          .map((row, rowIndex) => {
+            return (
+              "(" +
+              row
+                .map(
+                  (_, colIndex) =>
+                    `$${rowIndex * insertColumns.length + colIndex + 1}`
+                )
+                .join(", ") +
+              ")"
+            );
+          })
+          .join(", ");
+
+        const conflictColumn = format("%I", uniqueKeys[0]);
+        statement = `INSERT INTO ${tableIdentifier} (${columnNames}) VALUES ${valuePlaceholders} ON CONFLICT (${conflictColumn}) DO UPDATE SET ${updateClause.replace(
+          /s\./g,
+          "EXCLUDED."
+        )} RETURNING *`;
+      } else if (valueRows.length === 1) {
+        // Multiple unique keys with single row - use MERGE-like approach with CTE
+        const row = valueRows[0];
+        const valuesList = insertColumns
+          .map((col, idx) => `$${idx + 1} AS ${format("%I", col)}`)
+          .join(", ");
+
+        // Build WHERE conditions for matching existing records (equivalent to MERGE ON clause)
+        const matchConditions = uniqueKeys
+          .map((key) => {
+            return `t.${format("%I", key)} = s.${format("%I", key)}`;
+          })
+          .join(" OR ");
+
+        statement = `
+          WITH source_data AS (
+            SELECT ${valuesList}
+          ),
+          upsert AS (
+            UPDATE ${tableIdentifier} t
+            SET ${updateClause}
+            FROM source_data s
+            WHERE ${matchConditions}
+            RETURNING t.*
+          )
+          INSERT INTO ${tableIdentifier} (${columnNames})
+          SELECT ${columnNames}
+          FROM source_data
+          WHERE NOT EXISTS (SELECT 1 FROM upsert)
+          ON CONFLICT (${format(
+            "%I",
+            uniqueKeys[0]
+          )}) DO UPDATE SET ${updateClause.replace(/s\./g, "EXCLUDED.")}
+          RETURNING *
+        `
+          .replace(/\s+/g, " ")
+          .trim();
+      } else {
+        // Multiple rows with multiple unique keys - fallback to first unique key
+        const valuePlaceholders = valueRows
+          .map((row, rowIndex) => {
+            return (
+              "(" +
+              row
+                .map(
+                  (_, colIndex) =>
+                    `$${rowIndex * insertColumns.length + colIndex + 1}`
+                )
+                .join(", ") +
+              ")"
+            );
+          })
+          .join(", ");
+
+        const conflictColumn = format("%I", uniqueKeys[0]);
+        statement = `INSERT INTO ${tableIdentifier} (${columnNames}) VALUES ${valuePlaceholders} ON CONFLICT (${conflictColumn}) DO UPDATE SET ${updateClause.replace(
+          /s\./g,
+          "EXCLUDED."
+        )} RETURNING *`;
+      }
     } else {
       // No unique keys, just do a simple insert
-      const tableIdentifier = getTableIdentifier(table);
+      const valuePlaceholders = valueRows
+        .map((row, rowIndex) => {
+          return (
+            "(" +
+            row
+              .map(
+                (_, colIndex) =>
+                  `$${rowIndex * insertColumns.length + colIndex + 1}`
+              )
+              .join(", ") +
+            ")"
+          );
+        })
+        .join(", ");
+
       statement = `INSERT INTO ${tableIdentifier} (${columnNames}) VALUES ${valuePlaceholders} RETURNING *`;
     }
 
