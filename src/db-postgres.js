@@ -424,7 +424,6 @@ function executeUpsert(
 ) {
   return new Promise((resolve, reject) => {
     const tableIdentifier = getTableIdentifier(table);
-
     const columnNames = insertColumns
       .map((col) => format("%I", col))
       .join(", ");
@@ -539,57 +538,9 @@ function executeUpsert(
     }
 
     const flatValues = valueRows.flat();
-
-    // Helper function to attempt type conversion for problematic values
-    const convertTypesAndRetry = (error) => {
-      // Check if error is related to type mismatch
-      if (
-        error.message &&
-        (error.message.includes("bigint but expression is of type text") ||
-          error.message.includes("operator does not exist"))
-      ) {
-        // Convert string numbers to integers where needed
-        const convertedValueRows = valueRows.map((row) => {
-          return row.map((value) => {
-            // Convert string numbers to actual numbers
-            if (typeof value === "string" && /^\d+$/.test(value)) {
-              return parseInt(value, 10);
-            }
-            // Convert string booleans to actual booleans
-            if (
-              typeof value === "string" &&
-              (value === "true" || value === "false")
-            ) {
-              return value === "true";
-            }
-            return value;
-          });
-        });
-
-        const convertedFlatValues = convertedValueRows.flat();
-
-        // Retry the query with converted values
-        pool.query(
-          statement,
-          convertedFlatValues,
-          function (retryError, results) {
-            if (retryError) {
-              reject(retryError);
-              return;
-            }
-            resolve(results);
-          }
-        );
-      } else {
-        reject(error);
-      }
-    };
-
-    // First attempt with original values
     pool.query(statement, flatValues, function (error, results) {
       if (error) {
-        // If there's a type-related error, try converting and retrying
-        convertTypesAndRetry(error);
+        reject(error);
         return;
       }
       resolve(results);
