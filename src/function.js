@@ -56,6 +56,133 @@ function jsonStringify(obj) {
     return obj;
   }
 }
+
+function convertToModelTypes(data, modelStructure) {
+  if (Array.isArray(data)) {
+    return data.map((item) => convertToModelTypes(item, modelStructure));
+  }
+
+  if (!data || typeof data !== "object") {
+    return data;
+  }
+
+  const converted = {};
+  for (const [key, value] of Object.entries(data)) {
+    const fieldDefinition = modelStructure[key];
+    converted[key] = convertValueByType(value, fieldDefinition, key);
+  }
+
+  return converted;
+}
+
+function convertValueByType(value, fieldDefinition, key) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (!fieldDefinition) {
+    // No field definition, use existing logic
+    return convertGenericValue(value, key);
+  }
+
+  // Parse field definition (could be "required|integer", "string", etc.)
+  const types = fieldDefinition
+    .split("|")
+    .filter((t) => !["required", "optional"].includes(t));
+  const primaryType = types[0] || "string";
+
+  switch (primaryType) {
+    case "integer":
+      if (typeof value === "string" && /^-?\d+$/.test(value)) {
+        return parseInt(value, 10);
+      }
+      if (typeof value === "number") {
+        return Math.floor(value);
+      }
+      return value;
+
+    case "number":
+    case "float":
+      if (typeof value === "string" && /^-?\d*\.?\d+$/.test(value)) {
+        return parseFloat(value);
+      }
+      return value;
+
+    case "boolean":
+      if (typeof value === "string") {
+        if (value.toLowerCase() === "true") return true;
+        if (value.toLowerCase() === "false") return false;
+      }
+      return value;
+
+    case "object":
+      if (typeof value === "string") {
+        try {
+          return JSON.parse(value);
+        } catch (e) {
+          return value;
+        }
+      }
+      return value;
+
+    case "array":
+      if (typeof value === "string") {
+        try {
+          const parsed = JSON.parse(value);
+          return Array.isArray(parsed) ? parsed : value;
+        } catch (e) {
+          return value;
+        }
+      }
+      return value;
+
+    case "string":
+    default:
+      // For phone fields, keep as string even if numeric
+      if (key && (key.includes("phone") || key.includes("mobile"))) {
+        return String(value);
+      }
+      return value;
+  }
+}
+
+function convertGenericValue(value, key) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  // ID fields should be integers if they're numeric
+  if (key && (key.endsWith("_id") || key === "id")) {
+    if (typeof value === "string" && /^\d+$/.test(value)) {
+      return parseInt(value, 10);
+    }
+    if (typeof value === "number") {
+      return Math.floor(value);
+    }
+  }
+
+  // Phone fields should remain as strings
+  if (key && (key.includes("phone") || key.includes("mobile"))) {
+    return String(value);
+  }
+
+  // General numeric conversion
+  if (typeof value === "string" && /^-?\d+$/.test(value)) {
+    return parseInt(value, 10);
+  }
+
+  if (typeof value === "string" && /^-?\d+\.\d+$/.test(value)) {
+    return parseFloat(value);
+  }
+
+  // Boolean conversion
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+  }
+
+  return value;
+}
 function getType(obj) {
   if (Array.isArray(obj)) {
     return "array";
@@ -84,4 +211,7 @@ module.exports = {
   getType,
   empty,
   objectSelecter,
+  convertToModelTypes,
+  convertValueByType,
+  convertGenericValue,
 };

@@ -66,8 +66,9 @@ function query(sql, parameters = []) {
     pool.query(sql, parameters, function (error, results) {
       if (error) {
         reject(error);
+      } else {
+        resolve(results.rows);
       }
-      resolve(results.rows);
     });
   });
 }
@@ -445,10 +446,13 @@ function executeUpsert(
             return (
               "(" +
               row
-                .map(
-                  (_, colIndex) =>
-                    `$${rowIndex * insertColumns.length + colIndex + 1}`
-                )
+                .map((value, colIndex) => {
+                  const paramIndex =
+                    rowIndex * insertColumns.length + colIndex + 1;
+                  const columnName = insertColumns[colIndex];
+                  const typeCast = getPostgreSQLTypeCast(columnName, value);
+                  return `$${paramIndex}${typeCast}`;
+                })
                 .join(", ") +
               ")"
             );
@@ -464,7 +468,12 @@ function executeUpsert(
         // Multiple unique keys with single row - use MERGE-like approach with CTE
         const row = valueRows[0];
         const valuesList = insertColumns
-          .map((col, idx) => `$${idx + 1} AS ${format("%I", col)}`)
+          .map((col, idx) => {
+            const paramIndex = idx + 1;
+            const value = row[idx];
+            const typeCast = getPostgreSQLTypeCast(col, value);
+            return `$${paramIndex}${typeCast} AS ${format("%I", col)}`;
+          })
           .join(", ");
 
         // Build WHERE conditions for matching existing records (equivalent to MERGE ON clause)
@@ -504,10 +513,13 @@ function executeUpsert(
             return (
               "(" +
               row
-                .map(
-                  (_, colIndex) =>
-                    `$${rowIndex * insertColumns.length + colIndex + 1}`
-                )
+                .map((value, colIndex) => {
+                  const paramIndex =
+                    rowIndex * insertColumns.length + colIndex + 1;
+                  const columnName = insertColumns[colIndex];
+                  const typeCast = getPostgreSQLTypeCast(columnName, value);
+                  return `$${paramIndex}${typeCast}`;
+                })
                 .join(", ") +
               ")"
             );
@@ -527,10 +539,13 @@ function executeUpsert(
           return (
             "(" +
             row
-              .map(
-                (_, colIndex) =>
-                  `$${rowIndex * insertColumns.length + colIndex + 1}`
-              )
+              .map((value, colIndex) => {
+                const paramIndex =
+                  rowIndex * insertColumns.length + colIndex + 1;
+                const columnName = insertColumns[colIndex];
+                const typeCast = getPostgreSQLTypeCast(columnName, value);
+                return `$${paramIndex}${typeCast}`;
+              })
               .join(", ") +
             ")"
           );
@@ -635,10 +650,12 @@ function executeInsert(table, insertColumns, valueRows) {
         return (
           "(" +
           row
-            .map(
-              (_, colIndex) =>
-                `$${rowIndex * insertColumns.length + colIndex + 1}`
-            )
+            .map((value, colIndex) => {
+              const paramIndex = rowIndex * insertColumns.length + colIndex + 1;
+              const columnName = insertColumns[colIndex];
+              const typeCast = getPostgreSQLTypeCast(columnName, value);
+              return `$${paramIndex}${typeCast}`;
+            })
             .join(", ") +
           ")"
         );
@@ -674,77 +691,193 @@ function convertDataTypes(data) {
   if (Array.isArray(data)) {
     return data.map(convertDataTypes);
   }
-  
-  if (data && typeof data === 'object') {
+
+  if (data && typeof data === "object") {
     const converted = {};
     for (const [key, value] of Object.entries(data)) {
       converted[key] = convertSingleValue(key, value);
     }
     return converted;
   }
-  
+
   return data;
+}
+
+// Configuration for PostgreSQL type casting rules
+const TYPE_CAST_RULES = {
+  // ID fields - pattern-based detection
+  bigint: {
+    patterns: ["_id$", "^id$"], // Regex patterns
+    valueTypes: ["number", "string"],
+  },
+
+  // JSON fields - content-based detection
+  jsonb: {
+    patterns: ["_json$", "_data$", "_config$", "_meta$"], // Common JSON field patterns
+    valueDetector: (value) => {
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (
+          (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+          (trimmed.startsWith("[") && trimmed.endsWith("]"))
+        ) {
+          try {
+            JSON.parse(trimmed);
+            return true;
+          } catch (e) {
+            return false;
+          }
+        }
+      }
+      return false;
+    },
+  },
+
+  // Boolean fields - pattern-based detection
+  boolean: {
+    patterns: [
+      "^is_",
+      "^has_",
+      "^can_",
+      "_flag$",
+      "_deleted$",
+      "_active$",
+      "_enabled$",
+    ],
+    valueTypes: ["boolean"],
+    valueDetector: (value) => {
+      return (
+        typeof value === "boolean" ||
+        (typeof value === "string" && (value === "true" || value === "false"))
+      );
+    },
+  },
+};
+
+// Function to add custom type casting rules
+function addTypeCastRule(postgresType, rule) {
+  TYPE_CAST_RULES[postgresType] = {
+    ...TYPE_CAST_RULES[postgresType],
+    ...rule,
+  };
+}
+
+// Function to get current type casting rules (for debugging/inspection)
+function getTypeCastRules() {
+  return { ...TYPE_CAST_RULES };
+}
+
+// Helper function to determine PostgreSQL type cast for SQL queries
+function getPostgreSQLTypeCast(columnName, value) {
+  if (!columnName) return "";
+
+  for (const [castType, rules] of Object.entries(TYPE_CAST_RULES)) {
+    // Check pattern-based rules
+    if (rules.patterns) {
+      for (const pattern of rules.patterns) {
+        const regex = new RegExp(pattern);
+        if (regex.test(columnName)) {
+          // If value type restrictions exist, check them
+          if (rules.valueTypes && !rules.valueTypes.includes(typeof value)) {
+            continue;
+          }
+          return `::${castType}`;
+        }
+      }
+    }
+
+    // Check value-based detection
+    if (rules.valueDetector && rules.valueDetector(value)) {
+      return `::${castType}`;
+    }
+  }
+
+  // Default - no casting
+  return "";
 }
 
 function convertSingleValue(key, value) {
   if (value === null || value === undefined) {
     return value;
   }
-  
+
   // Handle nested objects/arrays
   if (Array.isArray(value)) {
-    return value.map(item => typeof item === 'object' ? convertDataTypes(item) : convertSingleValue('', item));
+    return value.map((item) =>
+      typeof item === "object"
+        ? convertDataTypes(item)
+        : convertSingleValue("", item)
+    );
   }
-  
-  if (typeof value === 'object') {
+
+  if (typeof value === "object") {
     return convertDataTypes(value);
   }
-  
+
   // Convert based on field patterns and value types
-  if (typeof value === 'string' && value.trim() !== '') {
+  if (typeof value === "string" && value.trim() !== "") {
     // Convert string booleans to proper booleans
-    if (value.toLowerCase() === 'true') return true;
-    if (value.toLowerCase() === 'false') return false;
-    
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+
     // Handle JSON strings that were stringified by jsonStringify
-    if ((value.startsWith('{') && value.endsWith('}')) || 
-        (value.startsWith('[') && value.endsWith(']'))) {
+    if (
+      (value.startsWith("{") && value.endsWith("}")) ||
+      (value.startsWith("[") && value.endsWith("]"))
+    ) {
       try {
-        // Try to parse it back to object/array
+        // Try to parse it back to object/array for proper JSON handling
         const parsed = JSON.parse(value);
-        // If it's an empty object, keep it as string for JSONB columns
-        if (typeof parsed === 'object') {
+        // Keep as JSON string for database JSONB columns
+        if (typeof parsed === "object") {
           return value; // Keep as JSON string for database
         }
       } catch (e) {
         // If parsing fails, keep as string
       }
     }
-    
-    // ID fields should be integers if they're numeric
-    if (key && (key.endsWith('_id') || key === 'id' || key === 'user_id')) {
+
+    // ID fields should be integers if they're numeric - critical for PostgreSQL bigint compatibility
+    if (key && (key.endsWith("_id") || key === "id")) {
       if (/^\d+$/.test(value)) {
-        return parseInt(value, 10);
+        const num = parseInt(value, 10);
+        // For PostgreSQL bigint columns, ensure we return a proper integer
+        return num;
       }
     }
-    
-    // General numeric conversion for non-phone-like fields
+
+    // Handle phone numbers - keep as strings
+    if (key && (key.includes("phone") || key.includes("mobile"))) {
+      return value; // Keep as string
+    }
+
+    // General numeric conversion for integer-like strings
     if (/^-?\d+$/.test(value)) {
-      // Don't convert phone numbers, but do convert other integers
-      if (key && (key.includes('phone') || key.includes('mobile'))) {
-        return value; // Keep as string
-      }
-      // Convert to integer
       const num = parseInt(value, 10);
-      return num;
+      // Check for safe integer range to avoid precision issues
+      if (num >= Number.MIN_SAFE_INTEGER && num <= Number.MAX_SAFE_INTEGER) {
+        return num;
+      } else {
+        // For very large numbers, keep as string and let PostgreSQL handle the conversion
+        return value;
+      }
     }
-    
+
     // Decimal numbers
     if (/^-?\d+\.\d+$/.test(value)) {
       return parseFloat(value);
     }
   }
-  
+
+  // Handle numeric values that come as numbers but need type validation
+  if (typeof value === "number") {
+    // For ID fields, ensure they're integers (critical for PostgreSQL)
+    if (key && (key.endsWith("_id") || key === "id")) {
+      return Math.floor(value);
+    }
+    return value;
+  }
+
   return value;
 }
 
@@ -777,4 +910,7 @@ module.exports = {
   formatTableName,
   getTableIdentifier,
   getSchemaConfig,
+  convertDataTypes,
+  addTypeCastRule,
+  getTypeCastRules,
 };

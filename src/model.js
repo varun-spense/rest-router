@@ -6,6 +6,42 @@ const {
   RemoveUnknownData,
 } = require("./validator");
 const { getType, jsonStringify, jsonSafeParse } = require("./function");
+
+// Helper function to pre-process data before validation
+// This handles only basic type conversions needed for validation
+function preprocessForValidation(data, modelStructure) {
+  if (Array.isArray(data)) {
+    return data.map((item) => preprocessForValidation(item, modelStructure));
+  }
+
+  if (!data || typeof data !== "object") {
+    return data;
+  }
+
+  const processed = { ...data };
+
+  for (const [key, value] of Object.entries(processed)) {
+    const fieldDefinition = modelStructure[key];
+    if (!fieldDefinition) continue;
+
+    // Parse field definition to get the type
+    const types = fieldDefinition
+      .split("|")
+      .filter((t) => !["required", "optional"].includes(t));
+    const primaryType = types[0] || "string";
+
+    // Only convert JSON strings to objects for validation
+    if (primaryType === "object" && typeof value === "string") {
+      try {
+        processed[key] = JSON.parse(value);
+      } catch (e) {
+        // If parsing fails, leave as string and let validator handle the error
+      }
+    }
+  }
+
+  return processed;
+}
 module.exports = function model(
   db,
   table,
@@ -83,6 +119,9 @@ module.exports = function model(
       //* Same as Update but primary key is optional */
       let updateResult = null;
       if (data.hasOwnProperty("data")) {
+        // Preprocess data for validation (mainly for JSON strings to objects)
+        data.data = preprocessForValidation(data.data, modelStructure);
+
         await validateInput(
           data,
           getPayloadValidator("CREATE", modelStructure, primary_key, true)
@@ -93,8 +132,11 @@ module.exports = function model(
         updateResult = await db.upsert(table, data, unique);
         //TODO: Bulk Upsert -> Return Inserted/Updated objects
       } else {
+        // Preprocess data for validation (mainly for JSON strings to objects)
+        const processedData = preprocessForValidation(data, modelStructure);
+
         await validateInput(
-          data,
+          processedData,
           getPayloadValidator("CREATE", modelStructure, primary_key, false)
         );
         data = RemoveUnknownData(modelStructure, [data]);
