@@ -706,6 +706,21 @@ function convertSingleValue(key, value) {
     if (value.toLowerCase() === 'true') return true;
     if (value.toLowerCase() === 'false') return false;
     
+    // Handle JSON strings that were stringified by jsonStringify
+    if ((value.startsWith('{') && value.endsWith('}')) || 
+        (value.startsWith('[') && value.endsWith(']'))) {
+      try {
+        // Try to parse it back to object/array
+        const parsed = JSON.parse(value);
+        // If it's an empty object, keep it as string for JSONB columns
+        if (typeof parsed === 'object') {
+          return value; // Keep as JSON string for database
+        }
+      } catch (e) {
+        // If parsing fails, keep as string
+      }
+    }
+    
     // ID fields should be integers if they're numeric
     if (key && (key.endsWith('_id') || key === 'id' || key === 'user_id')) {
       if (/^\d+$/.test(value)) {
