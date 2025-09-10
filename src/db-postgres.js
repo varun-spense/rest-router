@@ -337,6 +337,9 @@ function upsert(table, data, uniqueKeys = []) {
       array = data;
     }
 
+    // Convert data types to ensure PostgreSQL compatibility
+    array = convertDataTypes(array);
+
     const insertColumns = Object.keys(array[0]);
     const updateColumns = insertColumns.filter(
       (col) => !uniqueKeys.includes(col)
@@ -561,6 +564,9 @@ function insert(table, data, uniqueKeys = []) {
       array = data;
     }
 
+    // Convert data types to ensure PostgreSQL compatibility
+    array = convertDataTypes(array);
+
     const insertColumns = Object.keys(array[0]);
 
     // Build VALUES clause for bulk insert
@@ -661,6 +667,70 @@ function namify(text) {
   return text
     .replace("_", " ")
     .replace(/(^\w{1})|(\s+\w{1})/g, (letter) => letter.toUpperCase());
+}
+
+// Function to ensure proper PostgreSQL data type conversion
+function convertDataTypes(data) {
+  if (Array.isArray(data)) {
+    return data.map(convertDataTypes);
+  }
+  
+  if (data && typeof data === 'object') {
+    const converted = {};
+    for (const [key, value] of Object.entries(data)) {
+      converted[key] = convertSingleValue(key, value);
+    }
+    return converted;
+  }
+  
+  return data;
+}
+
+function convertSingleValue(key, value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  
+  // Handle nested objects/arrays
+  if (Array.isArray(value)) {
+    return value.map(item => typeof item === 'object' ? convertDataTypes(item) : convertSingleValue('', item));
+  }
+  
+  if (typeof value === 'object') {
+    return convertDataTypes(value);
+  }
+  
+  // Convert based on field patterns and value types
+  if (typeof value === 'string' && value.trim() !== '') {
+    // Convert string booleans to proper booleans
+    if (value.toLowerCase() === 'true') return true;
+    if (value.toLowerCase() === 'false') return false;
+    
+    // ID fields should be integers if they're numeric
+    if (key && (key.endsWith('_id') || key === 'id' || key === 'user_id')) {
+      if (/^\d+$/.test(value)) {
+        return parseInt(value, 10);
+      }
+    }
+    
+    // General numeric conversion for non-phone-like fields
+    if (/^-?\d+$/.test(value)) {
+      // Don't convert phone numbers, but do convert other integers
+      if (key && (key.includes('phone') || key.includes('mobile'))) {
+        return value; // Keep as string
+      }
+      // Convert to integer
+      const num = parseInt(value, 10);
+      return num;
+    }
+    
+    // Decimal numbers
+    if (/^-?\d+\.\d+$/.test(value)) {
+      return parseFloat(value);
+    }
+  }
+  
+  return value;
 }
 
 // Helper function to extract ID from a row
