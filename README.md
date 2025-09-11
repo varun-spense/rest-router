@@ -2,6 +2,23 @@
 
 Generative API Creation using pg and express libraries in node js
 
+## New Feature: Composite Constraints
+
+The `upsert` and `insert` functions now support composite constraints using enhanced syntax:
+
+```javascript
+// Composite constraint syntax: [["tenant_id", "user_id"], "mapper_id"]
+// - ["tenant_id", "user_id"] = composite constraint (both columns together)
+// - "mapper_id" = simple constraint (single column)
+
+const constraints = [["tenant_id", "user_id"], "mapper_id"];
+await db.upsert("users", userData, constraints);
+```
+
+See [COMPOSITE_CONSTRAINTS.md](./COMPOSITE_CONSTRAINTS.md) for detailed documentation.
+
+## Basic Usage
+
 ```
 const { db, model,route } = require("mysql-model-router");
 db.connect({

@@ -240,10 +240,14 @@ function upsert(table, data, uniqueKeys = []) {
     } else {
       array = data;
     }
+
+    // Parse constraints and flatten for backward compatibility with getChangeParameter
+    const flattenedKeys = flattenConstraints(uniqueKeys);
     const [statement, insertColumn, updateColumn] = getChangeParameter(
       array[0],
-      uniqueKeys
+      flattenedKeys
     );
+
     let value = [];
     for (const [i, v] of Object.entries(array)) {
       if (array.hasOwnProperty(i)) {
@@ -375,6 +379,43 @@ function namify(text) {
     .replace("_", " ")
     .replace(/(^\w{1})|(\s+\w{1})/g, (letter) => letter.toUpperCase());
 }
+
+/**
+ * Parse constraints to separate composite and simple constraints
+ * Input: [{tenant_id, user_id}, mapper_id] or ["tenant_id", "user_id"] (legacy)
+ * Output: { composite: [["tenant_id", "user_id"]], simple: ["mapper_id"] }
+ */
+function parseConstraints(uniqueKeys) {
+  if (!Array.isArray(uniqueKeys) || uniqueKeys.length === 0) {
+    return { composite: [], simple: [] };
+  }
+
+  const composite = [];
+  const simple = [];
+
+  uniqueKeys.forEach((constraint) => {
+    if (Array.isArray(constraint)) {
+      // Composite constraint: [tenant_id, user_id]
+      composite.push(constraint);
+    } else if (typeof constraint === "object" && constraint !== null) {
+      // Composite constraint as object: {tenant_id, user_id} - convert to array
+      composite.push(Object.keys(constraint));
+    } else {
+      // Simple constraint: mapper_id
+      simple.push(constraint);
+    }
+  });
+
+  return { composite, simple };
+}
+
+/**
+ * Flatten all constraints into a single array for backward compatibility
+ */
+function flattenConstraints(uniqueKeys) {
+  const parsed = parseConstraints(uniqueKeys);
+  return [...parsed.composite.flat(), ...parsed.simple];
+}
 module.exports = {
   connect,
   get,
@@ -400,11 +441,15 @@ function insert(table, data, uniqueKeys = []) {
     } else {
       array = data;
     }
+
+    // Parse constraints and flatten for backward compatibility with getChangeParameter
+    const flattenedKeys = flattenConstraints(uniqueKeys);
     const [statement, insertColumn, updateColumn] = getChangeParameter(
       array[0],
-      uniqueKeys,
+      flattenedKeys,
       false
     );
+
     let value = [];
     for (const [i, v] of Object.entries(array)) {
       if (array.hasOwnProperty(i)) {

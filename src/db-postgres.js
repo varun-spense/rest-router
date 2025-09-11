@@ -342,8 +342,13 @@ function upsert(table, data, uniqueKeys = []) {
     array = convertDataTypes(array);
 
     const insertColumns = Object.keys(array[0]);
+
+    // Parse constraints to separate composite and simple constraints
+    const parsedConstraints = parseConstraints(uniqueKeys);
+    const flattenedKeys = flattenConstraints(uniqueKeys);
+
     const updateColumns = insertColumns.filter(
-      (col) => !uniqueKeys.includes(col)
+      (col) => !flattenedKeys.includes(col)
     );
 
     // Build VALUES clause for bulk insert
@@ -366,7 +371,7 @@ function upsert(table, data, uniqueKeys = []) {
               table,
               insertColumns,
               updateColumns,
-              uniqueKeys,
+              parsedConstraints,
               valueRows
             )
           );
@@ -382,7 +387,7 @@ function upsert(table, data, uniqueKeys = []) {
           table,
           insertColumns,
           updateColumns,
-          uniqueKeys,
+          parsedConstraints,
           valueRows
         )
       );
@@ -423,7 +428,7 @@ function executeUpsert(
   table,
   insertColumns,
   updateColumns,
-  uniqueKeys,
+  parsedConstraints,
   valueRows
 ) {
   return new Promise((resolve, reject) => {
@@ -433,14 +438,41 @@ function executeUpsert(
       .join(", ");
 
     let statement;
-    if (uniqueKeys.length > 0) {
+    const hasConstraints =
+      parsedConstraints.composite.length > 0 ||
+      parsedConstraints.simple.length > 0;
+
+    if (hasConstraints) {
       const updateClause =
         updateColumns.length > 0
           ? updateColumns.map((col) => format("%I = s.%I", col, col)).join(", ")
           : format("%I = s.%I", insertColumns[0], insertColumns[0]); // fallback if no update columns
 
-      if (uniqueKeys.length === 1) {
-        // Single unique key - standard approach
+      // Build conflict clause for composite and simple constraints
+      const buildConflictClause = () => {
+        const constraints = [];
+
+        // Add composite constraints (multi-column unique constraints)
+        parsedConstraints.composite.forEach((compositeConstraint) => {
+          const cols = compositeConstraint
+            .map((col) => format("%I", col))
+            .join(", ");
+          constraints.push(`(${cols})`);
+        });
+
+        // Add simple constraints (single-column unique constraints)
+        parsedConstraints.simple.forEach((simpleConstraint) => {
+          constraints.push(format("%I", simpleConstraint));
+        });
+
+        return constraints.join(", ");
+      };
+
+      if (
+        parsedConstraints.composite.length === 1 &&
+        parsedConstraints.simple.length === 0
+      ) {
+        // Single composite constraint - use standard ON CONFLICT with composite key
         const valuePlaceholders = valueRows
           .map((row, rowIndex) => {
             return (
@@ -459,13 +491,44 @@ function executeUpsert(
           })
           .join(", ");
 
-        const conflictColumn = format("%I", uniqueKeys[0]);
+        const conflictColumns = parsedConstraints.composite[0]
+          .map((col) => format("%I", col))
+          .join(", ");
+
+        statement = `INSERT INTO ${tableIdentifier} (${columnNames}) VALUES ${valuePlaceholders} ON CONFLICT (${conflictColumns}) DO UPDATE SET ${updateClause.replace(
+          /s\./g,
+          "EXCLUDED."
+        )} RETURNING *`;
+      } else if (
+        parsedConstraints.simple.length === 1 &&
+        parsedConstraints.composite.length === 0
+      ) {
+        // Single simple constraint - use standard ON CONFLICT with single column
+        const valuePlaceholders = valueRows
+          .map((row, rowIndex) => {
+            return (
+              "(" +
+              row
+                .map((value, colIndex) => {
+                  const paramIndex =
+                    rowIndex * insertColumns.length + colIndex + 1;
+                  const columnName = insertColumns[colIndex];
+                  const typeCast = getPostgreSQLTypeCast(columnName, value);
+                  return `$${paramIndex}${typeCast}`;
+                })
+                .join(", ") +
+              ")"
+            );
+          })
+          .join(", ");
+
+        const conflictColumn = format("%I", parsedConstraints.simple[0]);
         statement = `INSERT INTO ${tableIdentifier} (${columnNames}) VALUES ${valuePlaceholders} ON CONFLICT (${conflictColumn}) DO UPDATE SET ${updateClause.replace(
           /s\./g,
           "EXCLUDED."
         )} RETURNING *`;
       } else if (valueRows.length === 1) {
-        // Multiple unique keys with single row - use MERGE-like approach with CTE
+        // Multiple constraints with single row - use MERGE-like approach with CTE
         const row = valueRows[0];
         const valuesList = insertColumns
           .map((col, idx) => {
@@ -476,12 +539,36 @@ function executeUpsert(
           })
           .join(", ");
 
-        // Build WHERE conditions for matching existing records (equivalent to MERGE ON clause)
-        const matchConditions = uniqueKeys
-          .map((key) => {
-            return `t.${format("%I", key)} = s.${format("%I", key)}`;
-          })
-          .join(" OR ");
+        // Build WHERE conditions for matching existing records
+        const matchConditions = [];
+
+        // Add composite constraint conditions
+        parsedConstraints.composite.forEach((compositeConstraint) => {
+          const condition = compositeConstraint
+            .map((key) => `t.${format("%I", key)} = s.${format("%I", key)}`)
+            .join(" AND ");
+          matchConditions.push(`(${condition})`);
+        });
+
+        // Add simple constraint conditions
+        parsedConstraints.simple.forEach((simpleConstraint) => {
+          matchConditions.push(
+            `t.${format("%I", simpleConstraint)} = s.${format(
+              "%I",
+              simpleConstraint
+            )}`
+          );
+        });
+
+        const combinedConditions = matchConditions.join(" OR ");
+
+        // Use the first constraint (composite or simple) for the final ON CONFLICT clause
+        const primaryConstraint =
+          parsedConstraints.composite.length > 0
+            ? parsedConstraints.composite[0]
+                .map((col) => format("%I", col))
+                .join(", ")
+            : format("%I", parsedConstraints.simple[0]);
 
         statement = `
           WITH source_data AS (
@@ -491,23 +578,23 @@ function executeUpsert(
             UPDATE ${tableIdentifier} t
             SET ${updateClause}
             FROM source_data s
-            WHERE ${matchConditions}
+            WHERE ${combinedConditions}
             RETURNING t.*
           )
           INSERT INTO ${tableIdentifier} (${columnNames})
           SELECT ${columnNames}
           FROM source_data
           WHERE NOT EXISTS (SELECT 1 FROM upsert)
-          ON CONFLICT (${format(
-            "%I",
-            uniqueKeys[0]
-          )}) DO UPDATE SET ${updateClause.replace(/s\./g, "EXCLUDED.")}
+          ON CONFLICT (${primaryConstraint}) DO UPDATE SET ${updateClause.replace(
+          /s\./g,
+          "EXCLUDED."
+        )}
           RETURNING *
         `
           .replace(/\s+/g, " ")
           .trim();
       } else {
-        // Multiple rows with multiple unique keys - fallback to first unique key
+        // Multiple rows with multiple constraints - fallback to first constraint
         const valuePlaceholders = valueRows
           .map((row, rowIndex) => {
             return (
@@ -526,7 +613,14 @@ function executeUpsert(
           })
           .join(", ");
 
-        const conflictColumn = format("%I", uniqueKeys[0]);
+        // Use the first constraint for the conflict clause
+        const conflictColumn =
+          parsedConstraints.composite.length > 0
+            ? parsedConstraints.composite[0]
+                .map((col) => format("%I", col))
+                .join(", ")
+            : format("%I", parsedConstraints.simple[0]);
+
         statement = `INSERT INTO ${tableIdentifier} (${columnNames}) VALUES ${valuePlaceholders} ON CONFLICT (${conflictColumn}) DO UPDATE SET ${updateClause.replace(
           /s\./g,
           "EXCLUDED."
@@ -684,6 +778,43 @@ function namify(text) {
   return text
     .replace("_", " ")
     .replace(/(^\w{1})|(\s+\w{1})/g, (letter) => letter.toUpperCase());
+}
+
+/**
+ * Parse constraints to separate composite and simple constraints
+ * Input: [{tenant_id, user_id}, mapper_id] or ["tenant_id", "user_id"] (legacy)
+ * Output: { composite: [["tenant_id", "user_id"]], simple: ["mapper_id"] }
+ */
+function parseConstraints(uniqueKeys) {
+  if (!Array.isArray(uniqueKeys) || uniqueKeys.length === 0) {
+    return { composite: [], simple: [] };
+  }
+
+  const composite = [];
+  const simple = [];
+
+  uniqueKeys.forEach((constraint) => {
+    if (Array.isArray(constraint)) {
+      // Composite constraint: [tenant_id, user_id]
+      composite.push(constraint);
+    } else if (typeof constraint === "object" && constraint !== null) {
+      // Composite constraint as object: {tenant_id, user_id} - convert to array
+      composite.push(Object.keys(constraint));
+    } else {
+      // Simple constraint: mapper_id
+      simple.push(constraint);
+    }
+  });
+
+  return { composite, simple };
+}
+
+/**
+ * Flatten all constraints into a single array for backward compatibility
+ */
+function flattenConstraints(uniqueKeys) {
+  const parsed = parseConstraints(uniqueKeys);
+  return [...parsed.composite.flat(), ...parsed.simple];
 }
 
 // Function to ensure proper PostgreSQL data type conversion
