@@ -840,6 +840,15 @@ const TYPE_CAST_RULES = {
   bigint: {
     patterns: ["_id$", "^id$"], // Regex patterns
     valueTypes: ["number", "string"],
+    valueValidator: (value) => {
+      // Only cast to bigint if the value is numeric
+      if (typeof value === "number") return true;
+      if (typeof value === "string") {
+        // Check if it's purely numeric (integers only)
+        return /^\d+$/.test(value);
+      }
+      return false;
+    },
   },
 
   // JSON fields - content-based detection
@@ -912,6 +921,12 @@ function getPostgreSQLTypeCast(columnName, value) {
           if (rules.valueTypes && !rules.valueTypes.includes(typeof value)) {
             continue;
           }
+
+          // If value validator exists, use it to determine if casting should be applied
+          if (rules.valueValidator && !rules.valueValidator(value)) {
+            continue;
+          }
+
           return `::${castType}`;
         }
       }
@@ -970,7 +985,7 @@ function convertSingleValue(key, value) {
 
     // ID fields should be integers if they're numeric - critical for PostgreSQL bigint compatibility
     if (key && (key.endsWith("_id") || key === "id")) {
-      if (/^\d+$/.test(value)) {
+      if (typeof value === "string" && /^\d+$/.test(value)) {
         const num = parseInt(value, 10);
         // For PostgreSQL bigint columns, ensure we return a proper integer
         return num;
