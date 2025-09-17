@@ -14,8 +14,8 @@ function connect(credentials) {
     console.error("Unexpected error on idle client", err);
   });
 
-  // Always use database name as schema - consistent across all environments
-  currentSchema = credentials.database;
+  // Always use schema from credentials - consistent across all environments
+  currentSchema = credentials.schema;
 
   return pool;
 }
