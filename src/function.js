@@ -139,7 +139,7 @@ function convertValueByType(value, fieldDefinition, key) {
     case "string":
     default:
       // For phone fields, keep as string even if numeric
-      if (key && (key.includes("phone") || key.includes("mobile"))) {
+      if (key && (key.includes("phone") || key.includes("mobile") || key.includes("account_number"))) {
         return String(value);
       }
       return value;
@@ -162,7 +162,7 @@ function convertGenericValue(value, key) {
   }
 
   // Phone fields should remain as strings
-  if (key && (key.includes("phone") || key.includes("mobile"))) {
+  if (key && (key.includes("phone") || key.includes("mobile") || key.includes("account_number"))) {
     return String(value);
   }
 

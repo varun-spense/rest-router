@@ -993,7 +993,7 @@ function convertSingleValue(key, value) {
     }
 
     // Handle phone numbers - keep as strings
-    if (key && (key.includes("phone") || key.includes("mobile"))) {
+    if (key && (key.includes("phone") || key.includes("mobile") || key.includes("account_number"))) {
       return value; // Keep as string
     }
 
